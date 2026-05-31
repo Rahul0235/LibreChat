@@ -1,10 +1,11 @@
 import { memo, useRef, useMemo, useEffect, useState, useCallback } from 'react';
 import { useWatch } from 'react-hook-form';
 import { TextareaAutosize } from '@librechat/client';
-import { useRecoilState, useRecoilValue } from 'recoil';
+import { useRecoilState, useRecoilValue, useResetRecoilState } from 'recoil';
 import { Constants, isAssistantsEndpoint, isAgentsEndpoint } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ExtendedFile, FileSetter, ConvoGenerator } from '~/common';
+import { selectedContactAtom } from '~/store/contacts';
 import {
   useChatContext,
   useChatFormContext,
@@ -40,9 +41,44 @@ import BadgeRow from './BadgeRow';
 import Mention from './Mention';
 import store from '~/store';
 
+// ── Contact context injection helpers ─────────────────────────────────────────
+const CONTACT_KEYWORDS = [
+  'who', 'contact', 'works at', 'email', 'company', 'cto', 'ceo', 'coo', 'vp',
+  'role', 'know about', 'tell me about', 'list all', 'people at', 'find', 'search',
+  'colleagues', 'director', 'manager', 'founder', 'employee', 'staff',
+];
+
+function isContactQuery(text: string): boolean {
+  const lower = text.toLowerCase();
+  return CONTACT_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+async function fetchContactContext(query: string): Promise<string> {
+  try {
+    const res = await fetch('/api/contacts/search-for-chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ query, limit: 10 }),
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+    if (!data.contacts?.length) return '';
+    const lines: string[] = data.contacts.map((c: Record<string, string>) =>
+      Object.entries(c)
+        .filter(([, v]) => v)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(', '),
+    );
+    return `[Relevant contacts from the user's contact list:\n${lines.join('\n')}]\n\n`;
+  } catch {
+    return '';
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface ChatFormProps {
   index: number;
-  /** From ChatContext — individual values so memo can compare them */
   files: Map<string, ExtendedFile>;
   setFiles: FileSetter;
   conversation: TConversation | null;
@@ -89,6 +125,10 @@ const ChatForm = memo(function ChatForm({
   const plusPopoverAtom = useMemo(() => store.showPlusPopoverFamily(index), [index]);
   const mentionPopoverAtom = useMemo(() => store.showMentionPopoverFamily(index), [index]);
 
+  // ── Selected contact atom (Ask AI feature) ────────────────────────────────
+  const selectedContact = useRecoilValue(selectedContactAtom);
+  const resetSelectedContact = useResetRecoilState(selectedContactAtom);
+
   const { requiresKey } = useRequiresKey();
   const methods = useChatFormContext();
   const {
@@ -130,7 +170,6 @@ const ChatForm = memo(function ChatForm({
   );
 
   const handleContainerClick = useCallback(() => {
-    /** Check if the device is a touchscreen */
     if (window.matchMedia?.('(pointer: coarse)').matches) {
       return;
     }
@@ -161,6 +200,32 @@ const ChatForm = memo(function ChatForm({
   });
 
   const { submitMessage, submitPrompt } = useSubmitMessage();
+
+  // ── Wrap submitMessage to inject contact context when relevant ────────────
+  const submitMessageWithContacts = useCallback(
+    async (data: Parameters<typeof submitMessage>[0]) => {
+      const text: string = (data as { text?: string })?.text ?? '';
+      if (text && isContactQuery(text)) {
+        const context = await fetchContactContext(text);
+        if (context) {
+          return submitMessage({
+            ...(data as object),
+            text: `${context}${text}`,
+          } as Parameters<typeof submitMessage>[0]);
+        }
+      }
+      return submitMessage(data);
+    },
+    [submitMessage],
+  );
+
+  // ── Pre-fill textarea when user clicks "Ask AI" on a contact ─────────────
+  useEffect(() => {
+    if (selectedContact) {
+      methods.setValue('text', `Tell me about ${selectedContact.name}`);
+      resetSelectedContact();
+    }
+  }, [selectedContact, methods, resetSelectedContact]);
 
   const handleKeyUp = useHandleKeyUp({
     index,
@@ -233,7 +298,7 @@ const ChatForm = memo(function ChatForm({
 
   return (
     <form
-      onSubmit={methods.handleSubmit(submitMessage)}
+      onSubmit={methods.handleSubmit(submitMessageWithContacts)}
       className={cn(
         'mx-auto flex w-full flex-row gap-3 transition-[max-width] duration-300 sm:px-2',
         maximizeChatSpace ? 'max-w-full' : 'md:max-w-3xl xl:max-w-4xl',
@@ -379,7 +444,7 @@ const ChatForm = memo(function ChatForm({
               {SpeechToText && (
                 <AudioRecorder
                   methods={methods}
-                  ask={submitMessage}
+                  ask={submitMessageWithContacts}
                   textAreaRef={textAreaRef}
                   disabled={disableInputs || isNotAppendable}
                   isSubmitting={isSubmitting}
@@ -408,11 +473,6 @@ const ChatForm = memo(function ChatForm({
 });
 ChatForm.displayName = 'ChatForm';
 
-/**
- * Wrapper that subscribes to ChatContext and passes stable individual values
- * to the memo'd ChatForm. This prevents ChatForm from re-rendering on every
- * streaming chunk — it only re-renders when the specific values it uses change.
- */
 function ChatFormWrapper({ index = 0 }: { index?: number }) {
   const {
     files,
@@ -425,14 +485,10 @@ function ChatFormWrapper({ index = 0 }: { index?: number }) {
     handleStopGenerating,
   } = useChatContext();
 
-  /**
-   * Stabilize conversation reference: only update when rendering-relevant fields change,
-   * not on every metadata update (e.g., title generation during streaming).
-   */
   const hasMessages = (conversation?.messages?.length ?? 0) > 0;
   const stableConversation = useMemo(
     () => conversation,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
     [
       conversation?.conversationId,
       conversation?.endpoint,
@@ -446,7 +502,6 @@ function ChatFormWrapper({ index = 0 }: { index?: number }) {
     ],
   );
 
-  /** Stabilize function refs so they never trigger ChatForm re-renders */
   const handleStopRef = useRef(handleStopGenerating);
   handleStopRef.current = handleStopGenerating;
   const stableHandleStop = useCallback(

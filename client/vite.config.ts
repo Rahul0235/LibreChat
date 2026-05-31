@@ -9,13 +9,6 @@ import type { Plugin } from 'vite';
 
 const require = createRequire(import.meta.url);
 
-/**
- * vite-plugin-node-polyfills uses @rollup/plugin-inject to replace bare globals (e.g. `process`)
- * with imports like `import process from 'vite-plugin-node-polyfills/shims/process'`. When the
- * consuming module (e.g. recoil) is hoisted to the monorepo root, Vite 7's ESM resolver walks up
- * from there and never finds the shims (installed only in client/node_modules). This map resolves
- * the shim specifiers to absolute paths via CJS require.resolve anchored to the client directory.
- */
 const NODE_POLYFILL_SHIMS: Record<string, string> = {
   'vite-plugin-node-polyfills/shims/process': require.resolve(
     'vite-plugin-node-polyfills/shims/process',
@@ -28,7 +21,6 @@ const NODE_POLYFILL_SHIMS: Record<string, string> = {
   ),
 };
 
-// https://vitejs.dev/config/
 const backendPort = (process.env.BACKEND_PORT && Number(process.env.BACKEND_PORT)) || 3080;
 const backendURL = process.env.HOST
   ? `http://${process.env.HOST}:${backendPort}`
@@ -46,14 +38,17 @@ export default defineConfig(({ command }) => ({
       '/api': {
         target: backendURL,
         changeOrigin: true,
+        secure: false,
+        cookieDomainRewrite: 'localhost',
       },
       '/oauth': {
         target: backendURL,
         changeOrigin: true,
+        secure: false,
+        cookieDomainRewrite: 'localhost',
       },
     },
   },
-  // Set the directory where environment variables are loaded from and restrict prefixes
   envDir: '../',
   envPrefix: ['VITE_', 'SCRIPT_', 'DOMAIN_', 'ALLOW_'],
   plugins: [
@@ -66,10 +61,10 @@ export default defineConfig(({ command }) => ({
     },
     nodePolyfills(),
     VitePWA({
-      injectRegister: 'auto', // 'auto' | 'manual' | 'disabled'
-      registerType: 'autoUpdate', // 'prompt' | 'autoUpdate'
+      injectRegister: 'auto',
+      registerType: 'autoUpdate',
       devOptions: {
-        enabled: false, // disable service worker registration in development mode
+        enabled: false,
       },
       useCredentials: true,
       includeManifestIcons: false,
@@ -139,11 +134,6 @@ export default defineConfig(({ command }) => ({
         manualChunks(id: string) {
           const normalizedId = id.replace(/\\/g, '/');
           if (normalizedId.includes('node_modules')) {
-            // High-impact chunking for large libraries
-
-            // IMPORTANT: mermaid and ALL its dependencies must be in the same chunk
-            // to avoid initialization order issues. This includes chevrotain, langium,
-            // dagre-d3-es, and their nested lodash-es dependencies.
             if (
               normalizedId.includes('mermaid') ||
               normalizedId.includes('dagre-d3-es') ||
@@ -153,7 +143,6 @@ export default defineConfig(({ command }) => ({
             ) {
               return 'mermaid';
             }
-
             if (normalizedId.includes('@codesandbox/sandpack')) {
               return 'sandpack';
             }
@@ -166,7 +155,6 @@ export default defineConfig(({ command }) => ({
             if (normalizedId.includes('i18next') || normalizedId.includes('react-i18next')) {
               return 'i18n';
             }
-            // Only regular lodash (not lodash-es which goes to mermaid chunk)
             if (normalizedId.includes('/lodash/')) {
               return 'utilities';
             }
@@ -196,7 +184,6 @@ export default defineConfig(({ command }) => ({
             ) {
               return 'security-ui';
             }
-
             if (normalizedId.includes('@codemirror/view')) {
               return 'codemirror-view';
             }
@@ -209,7 +196,6 @@ export default defineConfig(({ command }) => ({
             if (normalizedId.includes('@codemirror')) {
               return 'codemirror-core';
             }
-
             if (
               normalizedId.includes('react-markdown') ||
               normalizedId.includes('remark-') ||
@@ -249,8 +235,6 @@ export default defineConfig(({ command }) => ({
             if (normalizedId.includes('heic-to')) {
               return 'heic-converter';
             }
-
-            // Existing chunks
             if (normalizedId.includes('@radix-ui')) {
               return 'radix-ui';
             }
@@ -275,19 +259,14 @@ export default defineConfig(({ command }) => ({
             if (normalizedId.includes('@headlessui')) {
               return 'headlessui';
             }
-
             if (normalizedId.includes('@icons-pack/react-simple-icons/icons/')) {
               return;
             }
-
-            // Everything else falls into a generic vendor chunk.
             return 'vendor';
           }
-          // Create a separate chunk for all locale files under src/locales.
           if (normalizedId.includes('/src/locales/')) {
             return 'locales';
           }
-          // Let Rollup decide automatically for any other files.
           return null;
         },
         entryFileNames: 'assets/[name].[hash].js',
@@ -299,10 +278,6 @@ export default defineConfig(({ command }) => ({
           return 'assets/[name].[hash][extname]';
         },
       },
-      /**
-       * Ignore "use client" warning since we are not using SSR
-       * @see {@link https://github.com/TanStack/query/pull/5161#issuecomment-1477389761 Preserve 'use client' directives TanStack/query#5161}
-       */
       onwarn(warning, warn) {
         if (warning.message.includes('Error when using sourcemap')) {
           return;
@@ -332,7 +307,6 @@ export function sourcemapExclude(opts?: SourcemapExclude): Plugin {
       if (opts?.excludeNodeModules && id.includes('node_modules')) {
         return {
           code,
-          // https://github.com/rollup/rollup/blob/master/docs/plugin-development/index.md#source-code-transformations
           map: { mappings: '' },
         };
       }

@@ -1,3 +1,196 @@
+# Contact Workspace for LibreChat
+
+I built this as part of a fullstack assignment. The goal was to add a contacts feature to LibreChat so the AI can actually answer questions about people you know — not just give generic responses.
+
+The short version: you import your contacts, and then you can ask the chat things like "who works at Acme Corp?" and it'll tell you based on your actual data, not make something up.
+
+---
+
+## What I built
+
+- A contacts panel in the sidebar where you can add, edit, delete, and search contacts
+- CSV import that handles bulk uploads (tested with 1k and 10k contacts)
+- Chat integration that detects contact-related questions and automatically pulls in relevant contacts before sending to the AI
+- A Contact Assistant agent with a lookup tool so you can ask it direct questions about your contacts
+- A REST API for contacts with full CRUD + search + stats endpoints
+
+---
+
+## Getting it running
+
+You'll need Node.js 18+, MongoDB, and a Google AI Studio key (free at aistudio.google.com).
+
+**1. Install**
+
+```bash
+git clone https://github.com/your-username/LibreChat.git
+cd LibreChat
+npm install
+```
+
+**2. Environment setup**
+
+```bash
+cp .env.example .env
+```
+
+The important ones to set in `.env`:
+
+```env
+MONGO_URI=mongodb://127.0.0.1:27017/LibreChat
+GOOGLE_KEY=your_key_here
+
+# Generate these at librechat.ai/toolkit/creds_generator
+JWT_SECRET=
+JWT_REFRESH_SECRET=
+CREDS_KEY=
+CREDS_IV=
+
+# Any random string — used for the agent action auth
+CONTACTS_INTERNAL_KEY=contacts-secret-key-2024-xK9mP3
+```
+
+**3. Config file**
+
+```bash
+cp librechat.example.yaml librechat.yaml
+```
+
+Add localhost to the allowed domains in `librechat.yaml` (needed for the agent action):
+
+```yaml
+actions:
+  allowedDomains:
+    - swapi.dev
+    - librechat.ai
+    - google.com
+    - localhost
+    - localhost:3080
+```
+
+**4. Build and run**
+
+```bash
+cd client && npm run build && cd ..
+npm run backend:dev
+```
+
+Open `http://localhost:3080` and you're good.
+
+---
+
+## How the contacts feature works
+
+### The sidebar panel
+
+There's a people icon in the left nav that opens the Contacts panel. From there you can:
+- View and search your contacts
+- Add new ones manually (name, company, role, email, notes, plus any custom fields you want)
+- Edit or delete existing ones
+- Import from CSV
+
+### CSV import
+
+Click Import CSV and pick your file. I wrote the parser to handle messy real-world CSVs — it maps `first_name` + `last_name` into a single name field, handles `company_name` vs `company`, `designation` vs `role`, and puts everything else (city, mobile, pan, whatever) into a flexible attributes array so it's still searchable.
+
+### Chat integration
+
+This is the main thing. When you type a message in chat, the frontend checks if it looks like a contact question — things with "who", "company", "CTO", "works at", etc. If it does, it quietly fetches matching contacts from the database and adds them as context before sending to the AI.
+
+So instead of the AI saying "I don't know who works at Acme Corp", it gets the actual contact data and can say "John Doe works there as CTO, his email is john@acme.com".
+
+### The Contact Assistant agent
+
+There's also a dedicated agent set up with a `contactLookupTool` action. You can ask it:
+
+- *"Who works at [company]?"* — searches by company
+- *"List all CTOs"* — searches by role
+- *"Find contacts named Rahul"* — searches by name
+- *"What companies are in my contacts?"* — returns stats
+- *"Find contacts from Delhi"* — full text search
+
+---
+
+## Code structure
+
+```
+api/server/routes/
+  contacts.js           — the main CRUD routes
+  contacts.import.js    — handles CSV uploads
+  contacts.tool.js      — the lookup API used by chat + the agent
+
+client/src/
+  components/Contacts/
+    ContactsPanel.tsx   — the sidebar panel
+    ContactCard.tsx     — each contact row
+    ContactForm.tsx     — create/edit form
+    ContactImport.tsx   — the import button
+    SearchBar.tsx       — search input
+  hooks/Nav/
+    useUnifiedSidebarLinks.ts  — adds the contacts icon to the sidebar
+  components/Chat/Input/
+    ChatForm.tsx        — modified to inject contact context
+
+packages/
+  data-schemas/src/schema/contact.ts   — mongoose schema
+  api/src/contacts/contactService.ts   — business logic
+```
+
+The contact schema uses a compound MongoDB text index across name, company, role, email, notes, and attribute values. The weights are set so name matches rank higher than company, which ranks higher than role, etc.
+
+Auth on the contacts routes uses direct `jwt.verify()` against the refresh token cookie since that's how LibreChat stores the session. The agent tool routes also accept an internal API key so the agent action can authenticate without a browser session.
+
+---
+
+## Design questions
+
+### If the system needed to support 1,000,000 contacts, how would you redesign it?
+
+Honestly the current setup would start struggling around 50-100k contacts per user, mainly because of MongoDB's text search limitations.
+
+The two biggest changes I'd make:
+
+Replace MongoDB text search with something like Elasticsearch or Meilisearch. They're built specifically for this — you can get sub-10ms search on millions of documents. MongoDB text search is fine for moderate scale but it's not what you reach for at 1M records.
+
+Move CSV import to a background queue. Right now it's synchronous, which works fine for 1k rows but a 1M row file would just time out. I'd use BullMQ with Redis, return a job ID immediately, and let the user poll for progress. The batched insertMany approach I'm already using (500 rows at a time) would stay the same, just moved to a worker.
+
+Other things: sharding contacts by userId so each user's data is on the same shard, Redis caching for frequently searched contacts, cursor-based pagination instead of skip/limit (skip gets slow at high offsets).
+
+### How would you ensure the assistant retrieves the most relevant contacts for a query?
+
+Right now it's keyword matching via MongoDB text search — works well for straightforward queries but misses semantic ones. If someone asks "people interested in machine learning" and a contact has notes saying "loves AI and neural networks", the current search won't find them.
+
+The proper fix is vector search. Generate embeddings for each contact's combined text, store them alongside the contact, and at query time embed the user's question and do a cosine similarity search. You'd combine this with the existing keyword search (hybrid search with reciprocal rank fusion) so you get the best of both.
+
+I'd also add a query understanding step where the LLM parses the user's question before searching — extracting things like `{ company: "Acme", role: "CTO", city: "Mumbai" }` — so you can do precise field-level filtering instead of just throwing everything at a text index.
+
+### What are the limitations of your current implementation?
+
+A few honest ones:
+
+The search is keyword-only so semantic queries don't work. "People who work in fintech" won't match a contact at a financial technology company unless those words literally appear somewhere in their data.
+
+CSV import will time out on very large files. The 1M row dataset would need background job processing.
+
+No deduplication. If you import the same CSV twice, you get duplicate contacts. There's no logic to detect "this looks like the same person" based on email or name + company.
+
+The contacts routes use custom JWT verification instead of LibreChat's passport middleware. It works, but it means the routes bypass some of LibreChat's built-in middleware like tenant isolation, which matters in a multi-tenant deployment.
+
+The contacts list panel doesn't use virtualized rendering. With 10k+ contacts loaded, the DOM gets heavy. react-window would fix this.
+
+---
+
+## Video and commit
+
+Video recording: [add link here]
+
+Commit ID: [run `git log --oneline -1` and paste here]
+
+---
+
+Built on LibreChat v0.8.6-rc1
+
+
 <p align="center">
   <a href="https://librechat.ai">
     <img src="client/public/assets/logo.svg" height="256">

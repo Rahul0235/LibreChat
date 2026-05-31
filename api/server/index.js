@@ -45,13 +45,15 @@ const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
 const routes = require('./routes');
+const contactsRouter = require('./routes/contacts');
+const contactsImportRouter = require('./routes/contacts.import');
+const contactsToolRouter   = require('./routes/contacts.tool');
 
 const { PORT, HOST, ALLOW_SOCIAL_LOGIN, DISABLE_COMPRESSION, TRUST_PROXY } = process.env ?? {};
 
-// Allow PORT=0 to be used for automatic free port assignment
 const port = isNaN(Number(PORT)) ? 3080 : Number(PORT);
 const host = HOST || 'localhost';
-const trusted_proxy = Number(TRUST_PROXY) || 1; /* trust first proxy by default */
+const trusted_proxy = Number(TRUST_PROXY) || 1; 
 
 const app = express();
 let serverReady = false;
@@ -83,10 +85,7 @@ const startServer = async () => {
   }
 
   await runAsSystem(seedDatabase);
-  /* Recover stuck `status: 'pending'` records from a crash mid-render.
-   * `runAsSystem` is required — `File` is tenant-isolated and strict
-   * mode rejects unscoped queries. Lazy sweep in the preview endpoint
-   * covers anything younger than the boot cutoff. */
+  
   runAsSystem(sweepOrphanedPreviews).catch((err) => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
@@ -130,10 +129,7 @@ const startServer = async () => {
   app.use(express.urlencoded({ extended: true, limit: '3mb' }));
   app.use(handleJsonParseError);
 
-  /**
-   * Express 5 Compatibility: Make req.query writable for mongoSanitize
-   * In Express 5, req.query is read-only by default, but express-mongo-sanitize needs to modify it
-   */
+  
   app.use((req, _res, next) => {
     Object.defineProperty(req, 'query', {
       ...Object.getOwnPropertyDescriptor(req, 'query'),
@@ -170,7 +166,6 @@ const startServer = async () => {
   passport.use(jwtLogin());
   passport.use(passportLogin());
 
-  /* LDAP Auth */
   if (process.env.LDAP_URL && process.env.LDAP_USER_SEARCH_BASE) {
     passport.use(ldapLogin);
   }
@@ -179,11 +174,9 @@ const startServer = async () => {
     await configureSocialLogins(app);
   }
 
-  /* Per-request capability cache — must be registered before any route that calls hasCapability */
   app.use(capabilityContextMiddleware);
 
-  /* Pre-auth tenant context for unauthenticated routes that need tenant scoping.
-   * The reverse proxy / auth gateway sets `X-Tenant-Id` header for multi-tenant deployments. */
+  
   app.use('/oauth', preAuthTenantMiddleware, routes.oauth);
   /* API Endpoints */
   app.use('/api/auth', preAuthTenantMiddleware, routes.auth);
@@ -217,6 +210,9 @@ const startServer = async () => {
   app.use('/api/banner', routes.banner);
   app.use('/api/memories', routes.memories);
   app.use('/api/permissions', routes.accessPermissions);
+  app.use('/api/contacts-import', contactsImportRouter);
+  app.use('/api/contacts', contactsToolRouter);
+  app.use('/api/contacts', contactsRouter);
 
   app.use('/api/tags', routes.tags);
   app.use('/api/mcp', routes.mcp);
@@ -226,7 +222,6 @@ const startServer = async () => {
   /** 404 for unmatched API routes */
   app.use('/api', apiNotFound);
 
-  /** SPA fallback - serve index.html for all unmatched routes */
   app.use((req, res) => {
     res.set({
       'Cache-Control': process.env.INDEX_CACHE_CONTROL || 'no-cache, no-store, must-revalidate',
@@ -242,11 +237,9 @@ const startServer = async () => {
     res.send(updatedIndexHtml);
   });
 
-  /** Record trace errors before the final error controller. */
   if (telemetry.enabled) {
     app.use(telemetry.telemetryErrorMiddleware);
   }
-  /** Error handler (must be last - Express identifies error middleware by its 4-arg signature) */
   app.use(ErrorController);
 
   const server = app.listen(port, host, async (err) => {

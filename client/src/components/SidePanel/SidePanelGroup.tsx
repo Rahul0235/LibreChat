@@ -2,6 +2,7 @@ import { useState, memo } from 'react';
 import { useDefaultLayout } from 'react-resizable-panels';
 import { ResizablePanel, ResizablePanelGroup, useMediaQuery } from '@librechat/client';
 import ArtifactsPanel from './ArtifactsPanel';
+import ContactsPanel from '~/components/Contacts/ContactsPanel';
 
 const PANEL_IDS_SINGLE = ['messages-view'];
 const PANEL_IDS_SPLIT = ['messages-view', 'artifacts-panel'];

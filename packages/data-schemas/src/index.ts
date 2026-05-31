@@ -4,6 +4,8 @@ export * from './common';
 export * from './crypto';
 export * from './schema';
 export * from './utils';
+export * from './schema/contact';
+
 export { createModels } from './models';
 export {
   createMethods,
@@ -28,6 +30,9 @@ export {
   runAsSystem,
   scopedCacheKey,
   SYSTEM_TENANT_ID,
-} from './config/tenantContext';
+} 
+from './config/tenantContext';
 export type { TenantContext } from './config/tenantContext';
 export { dropSupersededTenantIndexes, dropSupersededPromptGroupIndexes } from './migrations';
+export { Contact } from './schema/contact';
+
