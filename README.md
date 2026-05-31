@@ -182,9 +182,10 @@ The contacts list panel doesn't use virtualized rendering. With 10k+ contacts lo
 
 ## Video and commit
 
-Video recording: [add link here]
+Video recording: [https://www.loom.com/share/9e3c5e9bc8d845868ad99a9d00a5dc8f]
 
-Commit ID: [run `git log --oneline -1` and paste here]
+Commit ID: 6ae2f4b9d (HEAD -> main, origin/main, origin/HEAD)
+          [run `git log --oneline -1` and paste here]
 
 ---
 
